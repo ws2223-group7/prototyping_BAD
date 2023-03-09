@@ -15,9 +15,12 @@
 """Python interface to Hanabi code."""
 import os
 import re
+from typing import Optional
 import cffi
 import enum
 import sys
+
+import numpy as np
 
 DEFAULT_CDEF_PREFIXES = (None, ".", os.path.dirname(__file__), "/include")
 DEFAULT_LIB_PREFIXES = (None, ".", os.path.dirname(__file__), "/lib")
@@ -175,6 +178,9 @@ class HanabiCard(object):
 
   def rank(self):
     return self._rank
+  
+  def one_plus_rank(self):
+    return self.rank() + 1
 
   def __str__(self):
     if self.valid():
@@ -256,7 +262,7 @@ class HanabiCardKnowledge(object):
       return lib.KnownRank(self._knowledge)
     else:
       return None
-
+  
   def rank_plausible(self, rank_index):
     """Returns true if we have no hint saying card is not the given rank.
 
@@ -594,6 +600,13 @@ class HanabiState(object):
     """Returns false if game is still active, true otherwise."""
     return (lib.StateEndOfGameStatus(self._state) !=
             HanabiEndOfGameType.NOT_FINISHED)
+  # AB change
+  def legal_moves_int(self) -> np.ndarray:
+      result = np.empty(0, int)
+      for legal_move in self.legal_moves():
+          move_id = lib.GetMoveUid(self._game, legal_move.c_move)
+          result = np.append(result, move_id)
+      return result
 
   def legal_moves(self):
     """Returns list of legal moves for currently acting player."""
