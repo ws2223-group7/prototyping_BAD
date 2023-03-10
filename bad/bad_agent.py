@@ -59,8 +59,14 @@ def train(env_name=ENV_NAME,
   # Build the neural net for policy gradient calculation
   policy_net = build(observation_size, action_size)
 
+  # Build the neural net for value calculation (actor-critic)
+  value_net = build(observation_size, 1)
+
   # Initialize the optimizer for the policy net
   optimizer_policy_net = Adam(policy_net.parameters(), lr=LR)
+
+  # Initialize the optimizer for the value net
+  optimizer_value_net = Adam(value_net.parameters(), lr=LR)
 
 
   def get_policy(observation):
@@ -69,16 +75,22 @@ def train(env_name=ENV_NAME,
     return Categorical(logits=logits)
 
 
+  def get_value(observation):
+    """Get the value given an observation"""
+    return value_net(observation).squeeze()
+
+
   def get_action(observation):
     """Sample an action from the probability distribution gained from an observation"""
     return get_policy(observation).sample().item()
 
 
-  def calculate_advantage(rewards_to_go):
-    """Calculate the advantage"""
+  def calculate_advantage(episode_observations, rewards_to_go):
+    """Calculate the advantage based on value estimate"""
     with torch.no_grad():
+      observation = torch.as_tensor(episode_observations, dtype=torch.float32)
       rewards_to_go = torch.as_tensor(rewards_to_go, dtype=torch.float32)
-      advantage = rewards_to_go
+      advantage = rewards_to_go - get_value(observation)
       return advantage
 
 
@@ -86,6 +98,12 @@ def train(env_name=ENV_NAME,
     """Calculate loss policy"""
     log_probs = get_policy(observation).log_prob(sampled_action)
     return -(log_probs * advantage).mean()
+
+
+  def calculate_loss_value_function(observation, value_target):
+    """Calculate loss value function"""
+    value_estimate = get_value(observation)
+    return (pow((value_estimate - value_target), 2)).mean()
 
 
   def calculate_rewards_to_go(episode_rewards):
@@ -136,51 +154,64 @@ def train(env_name=ENV_NAME,
 
     episode_returns = sum(episode_rewards)
     episode_length = len(episode_rewards)
-    advantage  = calculate_advantage(rewards_to_go)
+    advantage  = calculate_advantage(observation_vector, rewards_to_go)
 
-    return (episode_observations, episode_actions, episode_returns, episode_length, advantage)
+    return (episode_observations, episode_actions, rewards_to_go, episode_returns, episode_length, advantage)
 
 
   def train_epoch():
     """Train on one batch of episodes and record the results"""
     batch_episode_observations = []
     batch_episode_actions = []
+    batch_episode_rewards_to_go = []
     batch_episode_returns = []
     batch_episode_lengths = []
     batch_episode_advantage = []
 
     # Collect data from the environment
     while len(batch_episode_observations) < batch_size: 
-      episode_observations, episode_actions, episode_returns, episode_length, advantage = run_episode()
+      episode_observations, episode_actions, rewards_to_go, episode_returns, episode_length, advantage = run_episode()
 
       batch_episode_observations += episode_observations
       batch_episode_actions += episode_actions
+      batch_episode_rewards_to_go.append(rewards_to_go)
       batch_episode_returns.append(episode_returns)
       batch_episode_lengths.append(episode_length)
       batch_episode_advantage.append(advantage)
 
     batch_episode_observations = torch.stack(batch_episode_observations)
+    batch_episode_rewards_to_go = np.concatenate(batch_episode_rewards_to_go)
     batch_episode_advantage = np.concatenate(batch_episode_advantage)
 
-    observation = torch.as_tensor(batch_episode_observations, dtype=torch.float32)
-    sampled_action = torch.as_tensor(batch_episode_actions, dtype=torch.int32)
-    advantage = torch.as_tensor(batch_episode_advantage, dtype=torch.float32)
+    observation=torch.as_tensor(batch_episode_observations, dtype=torch.float32)
+    sampled_action=torch.as_tensor(batch_episode_actions, dtype=torch.int32)
+    advantage=torch.as_tensor(batch_episode_advantage, dtype=torch.float32)
 
     # Update the policy net after each epoch
     optimizer_policy_net.zero_grad()
     batch_loss_policy = calculate_loss_policy(observation, sampled_action, advantage)
     batch_loss_policy.backward()
     optimizer_policy_net.step()
-  
-    return batch_episode_returns, batch_episode_lengths, batch_loss_policy
+
+    observation = torch.as_tensor(batch_episode_observations, dtype=torch.float32)
+    value_target = torch.as_tensor(batch_episode_rewards_to_go, dtype=torch.float32)
+
+    # Update the value function net after each epoch
+    optimizer_value_net.zero_grad()
+    batch_loss_value_function = calculate_loss_value_function(observation, value_target)
+    batch_loss_value_function.backward()
+    optimizer_value_net.step()
+    
+    return batch_episode_returns, batch_episode_lengths, batch_loss_policy, batch_loss_value_function 
 
   # Output results
-  print('%10s %10s %15s %10s '%('epoch nr.', 'avg. ret.', 'avg. ep. len.', 'loss pi'))
+  print('%10s %10s %15s %10s %13s'%('epoch nr.', 'avg. ret.', 'avg. ep. len.', 'loss pi', 'loss vf'))
 
   for epoch in range(epochs):
-      batch_episode_returns, batch_episode_lengths, batch_loss_policy = train_epoch()
+      batch_episode_returns, batch_episode_lengths, batch_loss_policy, batch_loss_value_function = train_epoch()
       if epoch % 1 == 0: 
-          print('%10d %10.2f %12.1f %13.3f'%(epoch+1, np.mean(batch_episode_returns), np.mean(batch_episode_lengths), batch_loss_policy))
+          print('%10d %10.2f %12.1f %13.3f %13.3f'%
+          (epoch+1, np.mean(batch_episode_returns), np.mean(batch_episode_lengths), batch_loss_policy, batch_loss_value_function))
 
 
 if __name__ == '__main__':
