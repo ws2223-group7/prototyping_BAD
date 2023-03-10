@@ -13,6 +13,14 @@ from torch.optim import Adam
 import numpy as np
 from hanabi_learning_environment import rl_env
 
+import random
+
+# Set seed for reproducibility
+SEED = 42
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+torch.use_deterministic_algorithms(True)
+random.seed(SEED)
 
 # Hyperparameters
 LR = 0.001
@@ -66,10 +74,18 @@ def train(env_name=ENV_NAME,
     return get_policy(observation).sample().item()
 
 
-  def calculate_loss_policy(observation, sampled_action, rewards_to_go):
+  def calculate_advantage(rewards_to_go):
+    """Calculate the advantage"""
+    with torch.no_grad():
+      rewards_to_go = torch.as_tensor(rewards_to_go, dtype=torch.float32)
+      advantage = rewards_to_go
+      return advantage
+
+
+  def calculate_loss_policy(observation, sampled_action, advantage):
     """Calculate loss policy"""
     log_probs = get_policy(observation).log_prob(sampled_action)
-    return -(log_probs * rewards_to_go).mean()
+    return -(log_probs * advantage).mean()
 
 
   def calculate_rewards_to_go(episode_rewards):
@@ -120,38 +136,39 @@ def train(env_name=ENV_NAME,
 
     episode_returns = sum(episode_rewards)
     episode_length = len(episode_rewards)
+    advantage  = calculate_advantage(rewards_to_go)
 
-    return (episode_observations, episode_actions, rewards_to_go, episode_returns, episode_length)
+    return (episode_observations, episode_actions, episode_returns, episode_length, advantage)
 
 
   def train_epoch():
     """Train on one batch of episodes and record the results"""
     batch_episode_observations = []
     batch_episode_actions = []
-    batch_episode_rewards_to_go = []
     batch_episode_returns = []
     batch_episode_lengths = []
+    batch_episode_advantage = []
 
     # Collect data from the environment
     while len(batch_episode_observations) < batch_size: 
-      episode_observations, episode_actions, rewards_to_go, episode_returns, episode_length = run_episode()
+      episode_observations, episode_actions, episode_returns, episode_length, advantage = run_episode()
 
       batch_episode_observations += episode_observations
       batch_episode_actions += episode_actions
-      batch_episode_rewards_to_go.append(rewards_to_go)
       batch_episode_returns.append(episode_returns)
       batch_episode_lengths.append(episode_length)
+      batch_episode_advantage.append(advantage)
 
     batch_episode_observations = torch.stack(batch_episode_observations)
-    batch_episode_rewards_to_go = np.concatenate(batch_episode_rewards_to_go)
+    batch_episode_advantage = np.concatenate(batch_episode_advantage)
 
     observation = torch.as_tensor(batch_episode_observations, dtype=torch.float32)
     sampled_action = torch.as_tensor(batch_episode_actions, dtype=torch.int32)
-    rewards_to_go = torch.as_tensor(batch_episode_rewards_to_go, dtype=torch.float32)
+    advantage = torch.as_tensor(batch_episode_advantage, dtype=torch.float32)
 
     # Update the policy net after each epoch
     optimizer_policy_net.zero_grad()
-    batch_loss_policy = calculate_loss_policy(observation, sampled_action, rewards_to_go)
+    batch_loss_policy = calculate_loss_policy(observation, sampled_action, advantage)
     batch_loss_policy.backward()
     optimizer_policy_net.step()
   
