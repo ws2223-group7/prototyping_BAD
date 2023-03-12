@@ -41,7 +41,7 @@ def build(observation_size: int, action_size: int):
   layers = []
   layers = [nn.Linear(observation_size, 384), nn.ReLU()]
   layers += [nn.Linear(384, 384), nn.ReLU()]
-  layers += [nn.Linear(384, action_size), nn.Identity()]
+  layers += [nn.Linear(384, action_size), nn.Softmax()]
   return nn.Sequential(*layers)
 
 
